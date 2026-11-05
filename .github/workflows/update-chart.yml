@@ -22,7 +22,13 @@ jobs:
       - name: Generate chart
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python3 scripts/generate_chart.py
+          ALLOWED_REPOSITORIES: ${{ secrets.PROFILE_STATS_REPOSITORIES }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo 'GitHub Actions token is required.'
+            exit 1
+          fi
+          python3 scripts/generate_chart.py
       - name: Save chart
         run: |
           git config user.name 'github-actions[bot]'

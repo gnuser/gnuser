@@ -21,19 +21,33 @@ def months(now):
         yield start, end
 
 
+def aggregate(collection, allowed):
+    result = {}
+    for key, field, total in [('commits', 'commitContributionsByRepository', 'totalCommitContributions'), ('prs', 'pullRequestContributionsByRepository', 'totalPullRequestContributions')]:
+        groups = collection[field]
+        if sum(group['contributions']['totalCount'] for group in groups) != collection[total]:
+            raise RuntimeError('Repository breakdown is incomplete; refusing to publish')
+        result[key] = sum(group['contributions']['totalCount'] for group in groups if not group['repository']['isPrivate'] and group['repository']['nameWithOwner'].casefold() in allowed)
+    return result
+
+
 def fetch(now):
+    approved = json.loads(os.environ['ALLOWED_REPOSITORIES'])
+    if not isinstance(approved, list) or not approved or not all(isinstance(item, str) and '/' in item for item in approved):
+        raise RuntimeError('ALLOWED_REPOSITORIES must be a nonempty JSON array of owner/repository names')
+    allowed = {item.casefold() for item in approved}
     ranges = list(months(now))
     fields = []
     for i, (start, end) in enumerate(ranges):
-        fields.append(f'm{i}: contributionsCollection(from: {json.dumps(start.isoformat())}, to: {json.dumps(end.isoformat())}) {{ totalCommitContributions totalPullRequestContributions }}')
+        fields.append(f'm{i}: contributionsCollection(from: {json.dumps(start.isoformat())}, to: {json.dumps(end.isoformat())}) {{ totalCommitContributions totalPullRequestContributions restrictedContributionsCount commitContributionsByRepository(maxRepositories: 100) {{ repository {{ nameWithOwner isPrivate }} contributions {{ totalCount }} }} pullRequestContributionsByRepository(maxRepositories: 100) {{ repository {{ nameWithOwner isPrivate }} contributions {{ totalCount }} }} }}')
     query = 'query { user(login: "gnuser") { ' + ' '.join(fields) + ' } }'
     request = urllib.request.Request('https://api.github.com/graphql', data=json.dumps({'query': query}).encode(), headers={'Authorization': 'Bearer ' + os.environ['GH_TOKEN'], 'Content-Type': 'application/json', 'User-Agent': 'gnuser-profile-chart'})
     with urllib.request.urlopen(request, timeout=60) as response:
         payload = json.load(response)
     if payload.get('errors'):
-        raise RuntimeError(payload['errors'])
+        raise RuntimeError('GitHub could not provide the complete contribution breakdown')
     user = payload['data']['user']
-    return [{'month': start.strftime('%Y-%m'), 'commits': user[f'm{i}']['totalCommitContributions'], 'prs': user[f'm{i}']['totalPullRequestContributions']} for i, (start, _) in enumerate(ranges)]
+    return [{'month': start.strftime('%Y-%m'), **aggregate(user[f'm{i}'], allowed)} for i, (start, _) in enumerate(ranges)]
 
 
 def render(rows, now):
@@ -55,7 +69,7 @@ def render(rows, now):
             parts.append(f'<rect x="{x-20}" y="{baseline-height:.2f}" width="40" height="{height:.2f}" rx="4" fill="{color}" opacity="{0.65 if i == 11 else 1}"/>')
             parts.append(f'<text x="{x}" y="{baseline-height-7:.2f}" text-anchor="middle" class="value">{row[key]}</text>')
             parts.append(f'<text x="{x}" y="{baseline+22}" text-anchor="middle" font-size="11" class="muted">{row["month"]}</text>')
-    parts.append(f'<text x="32" y="559" font-size="12" class="muted">GitHub contribution counts · Public activity · Months use UTC</text>')
+    parts.append(f'<text x="32" y="559" font-size="12" class="muted">GitHub contribution counts · Selected public projects · Months use UTC</text>')
     parts.append(f'<text x="32" y="580" font-size="12" class="muted">Updated {now.strftime("%Y-%m-%d %H:%M UTC")}</text></svg>')
     return '\n'.join(parts) + '\n'
 
